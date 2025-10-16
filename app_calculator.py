@@ -288,7 +288,7 @@ if co2_ref is not None:
         
         # Section Optimisation
         st.markdown("---")
-        st.header("🎯 Optimisation Budget / Carbone")
+        st.header("Optimisation Budget / Carbone")
         
         st.markdown("""
         L'optimiseur permet de trouver la meilleure répartition budgétaire entre les supports pour :
@@ -439,7 +439,7 @@ if co2_ref is not None:
                             )
                         
                         # Tableau de répartition optimisée
-                        st.subheader("💰 Répartition Budgétaire Optimisée")
+                        st.subheader("Répartition Budgétaire Optimisée")
                         
                         df_display = df_optim[['Support', 'Budget', 'Budget_Optimise', 'Variation_€', 'Variation_%']].copy()
                         df_display['Budget'] = df_display['Budget'].apply(lambda x: f"{x:,.0f} €")

@@ -2,3 +2,6 @@ openpyxl
 pandas
 streamlit
 matplotlib
+detect-delimiter
+scipy
+numpy

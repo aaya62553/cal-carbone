@@ -366,18 +366,14 @@ if co2_ref is not None:
                     step=100
                 )
             
-            if st.button("🚀 Lancer l'optimisation", type="primary"):
+            if st.button("Lancer l'optimisation", type="primary"):
                 try:
                     # Forcer le rechargement du module optimizer pour éviter les problèmes de cache
                     import importlib
                     import sys
                     if 'optimizer' in sys.modules:
                         importlib.reload(sys.modules['optimizer'])
-                    from optimizer import optimisation_media
-                    
-                    # Afficher les données d'entrée pour debug
-                    with st.expander("🔍 Données d'optimisation (debug)", expanded=False):
-                        st.dataframe(df_optim)
+                    from optimizer import optimisation_media                    
                     
                     with st.spinner("Optimisation en cours..."):
                         resultat = optimisation_media(
@@ -415,7 +411,7 @@ if co2_ref is not None:
                         total_carbone_apres = sum(carbone_apres)
                         
                         # Afficher les métriques de comparaison
-                        st.subheader("📊 Comparaison Avant / Après Optimisation")
+                        st.subheader("Comparaison Avant / Après Optimisation")
                         
                         col1, col2, col3 = st.columns(3)
                         
@@ -455,7 +451,7 @@ if co2_ref is not None:
                         st.dataframe(df_display, use_container_width=True)
                         
                         # Graphique de comparaison
-                        st.subheader("📈 Comparaison Visuelle")
+                        st.subheader("Comparaison Visuelle")
                         
                         comparison_data = pd.DataFrame({
                             'Support': df_optim['Support'].tolist() + df_optim['Support'].tolist(),

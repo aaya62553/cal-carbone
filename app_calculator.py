@@ -19,8 +19,9 @@ def load_co2_reference():
     """Charge le fichier de référence CO2g contact.xlsx"""
     try:
         df = pd.read_excel('CO2g contact.xlsx')
-        # Nettoyer les données
-        df = df[['Support', 'CO2g/Contact']].dropna()
+        # Nettoyer les données - garder Alpha même avec NaN
+        df = df[['Support', 'CO2g/Contact', 'Alpha']]
+        df = df[df['Support'].notna() & df['CO2g/Contact'].notna()]
         return df
     except Exception as e:
         st.error(f"Erreur lors du chargement du fichier CO2g contact.xlsx : {e}")
@@ -88,7 +89,6 @@ if co2_ref is not None:
                 if 'Contact' not in df_plan.columns or 'Budget' not in df_plan.columns:
                     st.sidebar.error("❌ Le fichier doit contenir les colonnes 'Contact' et 'Budget'")
                 else:
-                    print(df_plan.columns)
                     # Obtenir le facteur CO2
                     co2_factor = co2_ref[co2_ref['Support'] == support_choisi]['CO2g/Contact'].values[0]
                     
@@ -119,13 +119,13 @@ if co2_ref is not None:
     
     # Affichage des plans ajoutés
     st.sidebar.markdown("---")
-    st.sidebar.subheader("📋 Plans actuels")
+    st.sidebar.subheader("Plans actuels")
     
     if len(st.session_state.plans) > 0:
         for idx, plan in enumerate(st.session_state.plans):
             col1, col2 = st.sidebar.columns([3, 1])
             with col1:
-                st.sidebar.text(f"{idx+1}. {plan['nom']}")
+                st.sidebar.text(f"{idx+1}. {plan['nom']} - {plan['support']}")
             with col2:
                 if st.sidebar.button("🗑️", key=f"delete_{idx}"):
                     st.session_state.plans.pop(idx)
@@ -286,6 +286,218 @@ if co2_ref is not None:
                 
                 st.dataframe(plan['data'], use_container_width=True)
         
+        # Section Optimisation
+        st.markdown("---")
+        st.header("🎯 Optimisation Budget / Carbone")
+        
+        st.markdown("""
+        L'optimiseur permet de trouver la meilleure répartition budgétaire entre les supports pour :
+        - **Minimiser l'empreinte carbone**
+        - **Maximiser les contacts utiles**
+        - Respecter les contraintes budgétaires
+        """)
+        
+        # Préparer les données pour l'optimisation
+        can_optimize = True
+        optimization_data = []
+        
+        for support, data in support_summary.items():
+            # Récupérer l'alpha du support
+            alpha_value = co2_ref[co2_ref['Support'] == support]['Alpha'].values
+            if len(alpha_value) == 0 or pd.isna(alpha_value[0]):
+                st.warning(f"⚠️ Le support '{support}' n'a pas de valeur Alpha définie. Optimisation impossible.")
+                can_optimize = False
+                break
+            
+            alpha = alpha_value[0]
+            co2_factor = data['CO2_factor']
+            budget = data['Budget']
+            contacts = data['Contacts']
+            
+            # Calculer les métriques nécessaires
+            # Alpha est un multiplicateur (pas une puissance) : Contacts_utiles = Contacts × (Alpha/100)
+            contacts_utiles = contacts * (alpha / 100)
+            contacts_utiles_per_euro = contacts_utiles / budget if budget > 0 else 0
+            carbone_per_euro = (contacts / budget) * co2_factor if budget > 0 else 0
+            
+            optimization_data.append({
+                'Support': support,
+                'Budget': budget,
+                'Contacts': contacts,
+                'Alpha': alpha,
+                'Contacts_utiles': contacts_utiles,
+                'Contacts_utiles_per_euro': contacts_utiles_per_euro,
+                'Carbone_per_euro': carbone_per_euro,
+                'CO2_factor': co2_factor
+            })
+        
+        if can_optimize and len(optimization_data) > 0:
+            df_optim = pd.DataFrame(optimization_data)
+            
+            # Paramètres d'optimisation
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                w_carbone = st.slider(
+                    "Poids Carbone",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.5,
+                    step=0.1,
+                    help="0 = Focus contacts utiles, 1 = Focus réduction carbone"
+                )
+            
+            with col2:
+                max_variation = st.slider(
+                    "Variation max par support (%)",
+                    min_value=0.0,
+                    max_value=2.0,
+                    value=0.5,
+                    step=0.1,
+                    help="Variation autorisée PAR SUPPORT par rapport à son budget initial. Ex: 0.5 = ±50% du budget de ce support"
+                )
+
+            with col3:
+                min_budget_par_canal = st.number_input(
+                    "Budget minimum par support (€)",
+                    min_value=0,
+                    max_value=int(total_budget / len(optimization_data)),
+                    value=1000,
+                    step=100
+                )
+            
+            if st.button("🚀 Lancer l'optimisation", type="primary"):
+                try:
+                    # Forcer le rechargement du module optimizer pour éviter les problèmes de cache
+                    import importlib
+                    import sys
+                    if 'optimizer' in sys.modules:
+                        importlib.reload(sys.modules['optimizer'])
+                    from optimizer import optimisation_media
+                    
+                    # Afficher les données d'entrée pour debug
+                    with st.expander("🔍 Données d'optimisation (debug)", expanded=False):
+                        st.dataframe(df_optim)
+                    
+                    with st.spinner("Optimisation en cours..."):
+                        resultat = optimisation_media(
+                            df_optim,
+                            w_carbone=w_carbone,
+                            min_budget_par_canal=min_budget_par_canal,
+                            max_variation=max_variation
+                        )
+                    
+                    if resultat.success:
+                        st.success("✅ Optimisation réussie !")
+                        
+                        # Préparer les résultats
+                        budgets_optimises = resultat.x
+                        df_optim['Budget_Optimise'] = budgets_optimises
+                        df_optim['Variation_%'] = ((budgets_optimises - df_optim['Budget']) / df_optim['Budget'] * 100)
+                        df_optim['Variation_€'] = budgets_optimises - df_optim['Budget']
+                        
+                        # Calculer les métriques optimisées
+                        total_contacts_utiles_avant = sum(df_optim['Contacts_utiles'])
+                        total_carbone_avant = sum(df_optim['Budget'] * df_optim['Carbone_per_euro'])
+                        
+                        # Recalculer avec les nouveaux budgets
+                        contacts_utiles_apres = []
+                        carbone_apres = []
+                        for i, row in df_optim.iterrows():
+                            nouveau_budget = budgets_optimises[i]
+                            # Estimer les nouveaux contacts proportionnellement au budget
+                            ratio_budget = nouveau_budget / row['Budget'] if row['Budget'] > 0 else 1
+                            nouveaux_contacts = row['Contacts'] * ratio_budget
+                            contacts_utiles_apres.append(nouveaux_contacts * (row['Alpha'] / 100))
+                            carbone_apres.append(nouveaux_contacts * row['CO2_factor'])
+                        
+                        total_contacts_utiles_apres = sum(contacts_utiles_apres)
+                        total_carbone_apres = sum(carbone_apres)
+                        
+                        # Afficher les métriques de comparaison
+                        st.subheader("📊 Comparaison Avant / Après Optimisation")
+                        
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric(
+                                "Budget Total",
+                                f"{sum(budgets_optimises):,.0f} €",
+                            )
+                        
+                        with col2:
+                            gain_contacts = ((total_contacts_utiles_apres - total_contacts_utiles_avant) / total_contacts_utiles_avant * 100)
+                            st.metric(
+                                "Contacts Utiles",
+                                f"{total_contacts_utiles_apres:,.0f}",
+                                delta=f"{gain_contacts:+.1f}%"
+                            )
+                        
+                        with col3:
+                            gain_carbone = ((total_carbone_apres - total_carbone_avant) / total_carbone_avant * 100)
+                            st.metric(
+                                "CO2 Total (g)",
+                                f"{total_carbone_apres:,.0f}",
+                                delta=f"{gain_carbone:+.1f}%",
+                                delta_color="inverse"  # Rouge = augmentation = mauvais
+                            )
+                        
+                        # Tableau de répartition optimisée
+                        st.subheader("💰 Répartition Budgétaire Optimisée")
+                        
+                        df_display = df_optim[['Support', 'Budget', 'Budget_Optimise', 'Variation_€', 'Variation_%']].copy()
+                        df_display['Budget'] = df_display['Budget'].apply(lambda x: f"{x:,.0f} €")
+                        df_display['Budget_Optimise'] = df_display['Budget_Optimise'].apply(lambda x: f"{x:,.0f} €")
+                        df_display['Variation_€'] = df_display['Variation_€'].apply(lambda x: f"{x:+,.0f} €")
+                        df_display['Variation_%'] = df_display['Variation_%'].apply(lambda x: f"{x:+.1f}%")
+                        
+                        df_display.columns = ['Support', 'Budget Initial', 'Budget Optimisé', 'Variation (€)', 'Variation (%)']
+                        st.dataframe(df_display, use_container_width=True)
+                        
+                        # Graphique de comparaison
+                        st.subheader("📈 Comparaison Visuelle")
+                        
+                        comparison_data = pd.DataFrame({
+                            'Support': df_optim['Support'].tolist() + df_optim['Support'].tolist(),
+                            'Budget': df_optim['Budget'].tolist() + budgets_optimises.tolist(),
+                            'Type': ['Initial'] * len(df_optim) + ['Optimisé'] * len(df_optim)
+                        })
+                        
+                        import plotly.express as px
+                        fig = px.bar(
+                            comparison_data,
+                            x='Support',
+                            y='Budget',
+                            color='Type',
+                            barmode='group',
+                            title='Comparaison Budget Initial vs Optimisé par Support',
+                            labels={'Budget': 'Budget (€)'},
+                            color_discrete_map={'Initial': '#1f77b4', 'Optimisé': '#2ca02c'}
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                    else:
+                        st.error(f"❌ L'optimisation a échoué : {resultat.message}")
+                        
+                        # Afficher plus de détails pour debug
+                        with st.expander("📋 Détails de l'échec"):
+                            st.write("**Statut:**", resultat.status)
+                            st.write("**Message:**", resultat.message)
+                            st.write("**Nombre d'itérations:**", resultat.nit if hasattr(resultat, 'nit') else 'N/A')
+                            st.write("**Nombre d'évaluations:**", resultat.nfev if hasattr(resultat, 'nfev') else 'N/A')
+                            st.write("**Solution partielle (x):**", resultat.x if hasattr(resultat, 'x') else 'N/A')
+                        
+                        st.info("💡 Essayez de : 1) Augmenter la variation max, 2) Réduire le budget minimum, ou 3) Relancer l'optimisation")
+                
+                except ImportError as e:
+                    st.error(f"❌ Le module optimizer.py est introuvable : {e}")
+                    st.info("Assurez-vous qu'optimizer.py est présent dans le même dossier que l'application.")
+                except Exception as e:
+                    st.error(f"❌ Erreur lors de l'optimisation : {e}")
+                    with st.expander("📋 Traceback complet"):
+                        import traceback
+                        st.code(traceback.format_exc())
+        
         # Bouton pour tout réinitialiser
         st.markdown("---")
         if st.button("🔄 Réinitialiser tous les plans", type="secondary"):
@@ -315,7 +527,7 @@ if co2_ref is not None:
         """)
         
         # Afficher la table de référence CO2
-        st.dataframe(co2_ref.sort_values('Support'), use_container_width=True)
+        st.dataframe(co2_ref, use_container_width=True)
 
 else:
     st.error("⚠️ Impossible de charger le fichier de référence CO2g contact.xlsx")

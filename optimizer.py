@@ -1,20 +1,19 @@
 import pandas as pd
 from scipy.optimize import minimize, LinearConstraint
 import numpy as np
-import matplotlib.pyplot as plt
 
-def optimisation_media(df, w_carbone=0.5, alpha=0.6,min_budget_par_canal=1000, max_variation=1.0):
+def optimisation_media(df, w_carbone=0.5, min_budget_par_canal=1000, max_variation=0.5):
     """
-    Optimise la répartition des spots en intégrant les rendements décroissants 
+    Optimise la répartition du budget en intégrant les rendements décroissants 
     et des contraintes métier.
     
     Paramètres:
     - df: DataFrame avec les métriques des canaux.
     - w_carbone: Poids de l'objectif carbone (0 à 1).
-    - alpha: Exposant des rendements décroissants (typiquement entre 0.4 et 0.8). 
-             Plus il est bas, plus les rendements diminuent vite.
-    - min_spots_par_canal: Nombre de spots minimum imposé pour chaque canal.
-    - max_variation: Variation maximale autorisée par rapport au nombre initial (ex: 1.0 = +100%).
+    - min_budget_par_canal: Budget minimum imposé pour chaque canal (en euros).
+    - max_variation: Variation maximale autorisée par rapport au budget initial de CHAQUE canal.
+                     Ex: 0.5 = ±50% du budget initial de ce canal
+                         1.0 = ±100% du budget initial de ce canal
     """
     
     efficacite_coeffs = df['Contacts_utiles_per_euro'].values
@@ -25,16 +24,16 @@ def optimisation_media(df, w_carbone=0.5, alpha=0.6,min_budget_par_canal=1000, m
     
     def objectif(x):
         total_carbone = np.sum(x * carbone_coeffs)
-        total_contacts_utiles = np.sum(efficacite_coeffs * (x ** alpha))
+        total_contacts_utiles = np.sum(efficacite_coeffs * (x))
         
         # Calculer moyenne et écart-type pour chaque métrique sur plusieurs scénarios
         # (à pré-calculer ou estimer)
         mean_carbone = np.mean(carbone_coeffs) * budget_total
         std_carbone = np.std(carbone_coeffs) * budget_total
         
-        mean_contacts = np.mean(efficacite_coeffs) * (budget_total ** alpha)
-        std_contacts = np.std(efficacite_coeffs) * (budget_total ** alpha)
-        
+        mean_contacts = np.mean(efficacite_coeffs) * (budget_total)
+        std_contacts = np.std(efficacite_coeffs) * (budget_total)
+
         # Z-score normalization
         norm_carbone = (total_carbone - mean_carbone) / (std_carbone + 1e-9)
         norm_contacts = (total_contacts_utiles - mean_contacts) / (std_contacts + 1e-9)
@@ -44,15 +43,18 @@ def optimisation_media(df, w_carbone=0.5, alpha=0.6,min_budget_par_canal=1000, m
     # 1. Le budget total de spots doit être respecté
     contrainte_budget = LinearConstraint(np.ones(n_canaux), [budget_total], [budget_total])
     
-    # 2. Limites pour chaque canal (min, max spots avec contrainte de variation maximale)
+    # 2. Limites pour chaque canal (min, max budget avec contrainte de variation maximale)
     limites = []
     for i in range(n_canaux):
-        min_budget = min_budget_par_canal
-        max_budget = min(
-            budgets_initiaux[i] * (1 + max_variation),
-            budget_total
+        # Le minimum est soit le budget minimum imposé, soit le budget initial réduit de max_variation
+        min_budget = max(
+            min_budget_par_canal,
+            budgets_initiaux[i] * (1 - max_variation)
         )
+        # Le maximum est le budget initial augmenté de max_variation
+        max_budget = budgets_initiaux[i] * (1 + max_variation)
         limites.append((min_budget, max_budget))
+    print("Budget initial par canal:", budgets_initiaux)
     print("Limites par canal (min, max):", limites)
     # Point de départ
     x0 = np.clip(budgets_initiaux, min_budget_par_canal, [lim[1] for lim in limites])
@@ -60,7 +62,32 @@ def optimisation_media(df, w_carbone=0.5, alpha=0.6,min_budget_par_canal=1000, m
     if np.sum(x0) != budget_total:
         x0 = x0 / np.sum(x0) * budget_total
 
-    # Optimisation
-    resultat = minimize(objectif, x0, method='trust-constr', bounds=limites, constraints=contrainte_budget)
+    # Options d'optimisation améliorées
+    options = {
+        'maxiter': 5000,  # Augmenter le nombre d'itérations maximum
+    }
+
+    # Optimisation avec gestion d'erreur
+    try:
+        resultat = minimize(
+            objectif, 
+            x0, 
+            method='trust-constr', 
+            bounds=limites, 
+            constraints=contrainte_budget,
+            options=options
+        )
+    except Exception as e:
+        print(f"Erreur lors de l'optimisation: {e}")
+        # Si trust-constr échoue, essayer SLSQP qui est plus robuste
+        print("Tentative avec la méthode SLSQP...")
+        resultat = minimize(
+            objectif,
+            x0,
+            method='SLSQP',
+            bounds=limites,
+            constraints={'type': 'eq', 'fun': lambda x: np.sum(x) - budget_total},
+            options={'maxiter': 5000, 'ftol': 1e-6}
+        )
     
     return resultat

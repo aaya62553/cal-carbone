@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 
 # Configuration de la page
 st.set_page_config(
@@ -78,7 +77,7 @@ if co2_ref is not None:
                 # Vérifier les colonnes requises
                 cont,bud=False,False
                 for col_plan in df_plan.columns:
-                    if "contact" in col_plan.lower() or "contacts" in col_plan.lower():
+                    if "contact" in col_plan.lower() or "impression" in col_plan.lower():
                         df_plan.rename(columns={col_plan: "Contact"}, inplace=True)
                         cont=True
                     if "budget" in col_plan.lower() or "tarif" in col_plan.lower():
@@ -93,7 +92,6 @@ if co2_ref is not None:
                     co2_factor = co2_ref[co2_ref['Support'] == support_choisi]['CO2g/Contact'].values[0]
                     
                     # Calculer le CO2 total
-
                     df_plan['Contact'] = df_plan['Contact'].astype(str).str.replace(" ", "").str.replace(",",".").astype(float)
                     df_plan['Budget'] = df_plan['Budget'].astype(str).str.replace(" ", "").str.replace(",",".").astype(float)
                     total_contacts = df_plan['Contact'].sum()
@@ -343,7 +341,7 @@ if co2_ref is not None:
                     min_value=0.0,
                     max_value=1.0,
                     value=0.5,
-                    step=0.1,
+                    step=0.05,
                     help="0 = Focus contacts utiles, 1 = Focus réduction carbone"
                 )
             
@@ -493,6 +491,191 @@ if co2_ref is not None:
                     with st.expander("📋 Traceback complet"):
                         import traceback
                         st.code(traceback.format_exc())
+        
+        # Courbe de Pareto
+        st.markdown("---")
+        st.header("Analyse de Pareto : Contacts Utiles vs Carbone")
+        
+        st.markdown("""
+        La courbe de Pareto explore différents compromis entre **maximiser les contacts utiles** 
+        et **minimiser l'empreinte carbone** en variant le poids carbone de 0 à 1.
+        """)
+        
+        if st.button("🔬 Générer la Courbe de Pareto", type="primary"):
+            if can_optimize and len(optimization_data) > 0:
+                try:
+                    from optimizer import optimisation_media
+                    import importlib
+                    import sys
+                    if 'optimizer' in sys.modules:
+                        importlib.reload(sys.modules['optimizer'])
+                    
+                    # Tester différents poids carbone
+                    poids_carbone_range = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+                    pareto_results = []
+                    
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    for i, w in enumerate(poids_carbone_range):
+                        status_text.text(f"Optimisation pour poids carbone = {w:.1f}...")
+                        
+                        resultat = optimisation_media(
+                            df_optim,
+                            w_carbone=w,
+                            min_budget_par_canal=min_budget_par_canal,
+                            max_variation=max_variation
+                        )
+                        
+                        if resultat.success:
+                            # Calculer les métriques pour cette solution
+                            contacts_utiles_total = 0
+                            carbone_total = 0
+                            
+                            for j, row in df_optim.iterrows():
+                                nouveau_budget = resultat.x[j]
+                                ratio_budget = nouveau_budget / row['Budget'] if row['Budget'] > 0 else 1
+                                nouveaux_contacts = row['Contacts'] * ratio_budget
+                                contacts_utiles_total += nouveaux_contacts * (row['Alpha'] / 100)
+                                carbone_total += nouveaux_contacts * row['CO2_factor']
+                            
+                            pareto_results.append({
+                                'w_carbone': w,
+                                'contacts_utiles': contacts_utiles_total,
+                                'carbone_g': carbone_total,
+                                'carbone_kg': carbone_total / 1000,
+                                'budgets': resultat.x.copy()
+                            })
+                        
+                        progress_bar.progress((i + 1) / len(poids_carbone_range))
+                    
+                    status_text.empty()
+                    progress_bar.empty()
+                    
+                    if len(pareto_results) > 0:
+                        st.success(f"✅ {len(pareto_results)} optimisations réussies sur {len(poids_carbone_range)}")
+                        
+                        # Créer le DataFrame pour Pareto
+                        df_pareto = pd.DataFrame([{
+                            'Poids Carbone': r['w_carbone'],
+                            'Contacts Utiles': r['contacts_utiles'],
+                            'Carbone (kg)': r['carbone_kg']
+                        } for r in pareto_results])
+                        
+                        # Graphique Pareto interactif
+                        import plotly.graph_objects as go
+                        
+                        fig = go.Figure()
+                        
+                        # Ajouter la courbe Pareto
+                        fig.add_trace(go.Scatter(
+                            x=df_pareto['Carbone (kg)'],
+                            y=df_pareto['Contacts Utiles'],
+                            mode='lines+markers',
+                            marker=dict(
+                                size=12,
+                                color=df_pareto['Poids Carbone'],
+                                colorscale='RdYlGn',
+                                showscale=True,
+                                colorbar=dict(title="Poids<br>Carbone"),
+                                line=dict(width=1, color='white')
+                            ),
+                            line=dict(width=2, color='rgba(100, 100, 100, 0.3)'),
+                            text=[f"w={w:.1f}" for w in df_pareto['Poids Carbone']],
+                            hovertemplate='<b>Poids Carbone: %{text}</b><br>' +
+                                         'Carbone: %{x:,.0f} kg<br>' +
+                                         'Contacts Utiles: %{y:,.0f}<br>' +
+                                         '<extra></extra>'
+                        ))
+                        
+                        # Ajouter le point initial (avant optimisation)
+                        contacts_init = sum(df_optim['Contacts_utiles'])
+                        carbone_init = sum(df_optim['Budget'] * df_optim['Carbone_per_euro']) / 1000
+                        
+                        fig.add_trace(go.Scatter(
+                            x=[carbone_init],
+                            y=[contacts_init],
+                            mode='markers',
+                            marker=dict(size=15, color='red', symbol='star', line=dict(width=2, color='white')),
+                            name='Budget Initial',
+                            hovertemplate='<b>Budget Initial</b><br>' +
+                                         'Carbone: %{x:,.0f} kg<br>' +
+                                         'Contacts Utiles: %{y:,.0f}<br>' +
+                                         '<extra></extra>'
+                        ))
+                        
+                        fig.update_layout(
+                            title='Courbe de Pareto : Efficacité vs Empreinte Carbone',
+                            xaxis_title='Empreinte Carbone (kg)',
+                            yaxis_title='Contacts Utiles',
+                            hovermode='closest',
+                            height=600,
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Tableau récapitulatif
+                        st.subheader("📋 Détails des Solutions Pareto")
+                        
+                        df_pareto_display = df_pareto.copy()
+                        df_pareto_display['Contacts Utiles'] = df_pareto_display['Contacts Utiles'].apply(lambda x: f"{x:,.0f}")
+                        df_pareto_display['Carbone (kg)'] = df_pareto_display['Carbone (kg)'].apply(lambda x: f"{x:,.2f}")
+                        
+                        # Calculer les variations par rapport à l'initial
+                        variations = []
+                        for r in pareto_results:
+                            var_contacts = (r['contacts_utiles'] - contacts_init) / contacts_init * 100
+                            var_carbone = (r['carbone_kg'] - carbone_init) / carbone_init * 100
+                            variations.append({
+                                'Δ Contacts (%)': f"{var_contacts:+.1f}%",
+                                'Δ Carbone (%)': f"{var_carbone:+.1f}%"
+                            })
+                        
+                        df_variations = pd.DataFrame(variations)
+                        df_pareto_final = pd.concat([df_pareto_display, df_variations], axis=1)
+                        
+                        st.dataframe(df_pareto_final, use_container_width=True)
+                        
+                        # Recommandations
+                        st.subheader("Recommandations")
+                        
+                        # Trouver les meilleurs compromis
+                        best_contacts_idx = df_pareto['Contacts Utiles'].idxmax()
+                        best_carbone_idx = df_pareto['Carbone (kg)'].idxmin()
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.markdown("**Meilleure Performance**")
+                            st.metric("Poids Carbone", f"{pareto_results[best_contacts_idx]['w_carbone']:.1f}")
+                            st.metric("Contacts Utiles", f"{pareto_results[best_contacts_idx]['contacts_utiles']:,.0f}")
+                            st.metric("Carbone", f"{pareto_results[best_contacts_idx]['carbone_kg']:,.1f} kg")
+                        
+                        with col2:
+                            st.markdown("**Meilleure Empreinte Carbone**")
+                            st.metric("Poids Carbone", f"{pareto_results[best_carbone_idx]['w_carbone']:.1f}")
+                            st.metric("Contacts Utiles", f"{pareto_results[best_carbone_idx]['contacts_utiles']:,.0f}")
+                            st.metric("Carbone", f"{pareto_results[best_carbone_idx]['carbone_kg']:,.1f} kg")
+                        
+                        # Option d'export
+                        st.markdown("---")
+                        if st.button("Exporter les résultats Pareto (CSV)"):
+                            csv = df_pareto_final.to_csv(index=False)
+                            st.download_button(
+                                label="Télécharger CSV",
+                                data=csv,
+                                file_name="pareto_analysis.csv",
+                                mime="text/csv"
+                            )
+                    else:
+                        st.error("❌ Aucune optimisation n'a réussi")
+                
+                except Exception as e:
+                    st.error(f"❌ Erreur lors de la génération de la courbe de Pareto : {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+            else:
+                st.warning("⚠️ Impossible de générer la courbe de Pareto : certains supports n'ont pas de valeur Alpha")
         
         # Bouton pour tout réinitialiser
         st.markdown("---")

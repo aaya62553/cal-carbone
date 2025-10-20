@@ -152,7 +152,7 @@ if co2_ref is not None:
         
         # Afficher le tableau récapitulatif par plan
         st.subheader("Par Plan")
-        st.dataframe(df_summary, use_container_width=True)
+        st.dataframe(df_summary, width=1200)
         
         # Tableau récapitulatif par support
         st.markdown("---")
@@ -188,7 +188,7 @@ if co2_ref is not None:
             })
         
         df_support_summary = pd.DataFrame(support_data)
-        st.dataframe(df_support_summary, use_container_width=True)
+        st.dataframe(df_support_summary, width=1200)
         
         # Calculs globaux
         st.markdown("---")
@@ -282,7 +282,7 @@ if co2_ref is not None:
                 with col3:
                     st.metric("CO2 Total", f"{plan['co2_total']/1000:.2f} kg")
                 
-                st.dataframe(plan['data'], use_container_width=True)
+                st.dataframe(plan['data'], width=1200)
         
         # Section Optimisation
         st.markdown("---")
@@ -446,7 +446,7 @@ if co2_ref is not None:
                         df_display['Variation_%'] = df_display['Variation_%'].apply(lambda x: f"{x:+.1f}%")
                         
                         df_display.columns = ['Support', 'Budget Initial', 'Budget Optimisé', 'Variation (€)', 'Variation (%)']
-                        st.dataframe(df_display, use_container_width=True)
+                        st.dataframe(df_display, width=1200)
                         
                         # Graphique de comparaison
                         st.subheader("Comparaison Visuelle")
@@ -468,7 +468,7 @@ if co2_ref is not None:
                             labels={'Budget': 'Budget (€)'},
                             color_discrete_map={'Initial': '#1f77b4', 'Optimisé': '#2ca02c'}
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, config={'responsive': True})
                         
                     else:
                         st.error(f"❌ L'optimisation a échoué : {resultat.message}")
@@ -561,7 +561,13 @@ if co2_ref is not None:
                             'Contacts Utiles': r['contacts_utiles'],
                             'Carbone (kg)': r['carbone_kg']
                         } for r in pareto_results])
+                        df_pareto["Derive_Contacts"] = df_pareto["Contacts Utiles"].diff() / df_pareto["Carbone (kg)"].diff()
+                        df_pareto["Derive_Contacts"].fillna(0, inplace=True)
                         
+                        for i in range(3, len(df_pareto)):
+                            if df_pareto.loc[10-i, "Derive_Contacts"] < df_pareto.loc[10-i+1, "Derive_Contacts"]*0.7 and df_pareto.loc[10-i+1, "Derive_Contacts"] >= 0:
+                                optimal_idx = 10-i
+                                break
                         # Graphique Pareto interactif
                         import plotly.graph_objects as go
                         
@@ -603,6 +609,18 @@ if co2_ref is not None:
                                          'Contacts Utiles: %{y:,.0f}<br>' +
                                          '<extra></extra>'
                         ))
+
+                        fig.add_trace(go.Scatter(
+                            x=[df_pareto['Carbone (kg)'][optimal_idx]],
+                            y=[df_pareto['Contacts Utiles'][optimal_idx]],
+                            mode='markers+text',
+                            marker=dict(color='green', size=15, symbol='circle'),
+                            text=['Poids optimal'],
+                            textposition='top center',
+                            hoverinfo='skip',
+                            showlegend=False
+                            
+                        ))
                         
                         fig.update_layout(
                             title='Courbe de Pareto : Efficacité vs Empreinte Carbone',
@@ -612,7 +630,7 @@ if co2_ref is not None:
                             height=600,
                         )
                         
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig)
                         
                         # Tableau récapitulatif
                         st.subheader("📋 Détails des Solutions Pareto")
@@ -633,8 +651,8 @@ if co2_ref is not None:
                         
                         df_variations = pd.DataFrame(variations)
                         df_pareto_final = pd.concat([df_pareto_display, df_variations], axis=1)
-                        
-                        st.dataframe(df_pareto_final, use_container_width=True)
+                        st.session_state.df_pareto_final = df_pareto_final
+                        st.dataframe(df_pareto_final, width=1200)
                         
                         # Recommandations
                         st.subheader("Recommandations")
@@ -642,9 +660,11 @@ if co2_ref is not None:
                         # Trouver les meilleurs compromis
                         best_contacts_idx = df_pareto['Contacts Utiles'].idxmax()
                         best_carbone_idx = df_pareto['Carbone (kg)'].idxmin()
+
                         
-                        col1, col2 = st.columns(2)
-                        
+
+                        col1, col2, col3 = st.columns(3)
+
                         with col1:
                             st.markdown("**Meilleure Performance**")
                             st.metric("Poids Carbone", f"{pareto_results[best_contacts_idx]['w_carbone']:.1f}")
@@ -657,10 +677,17 @@ if co2_ref is not None:
                             st.metric("Contacts Utiles", f"{pareto_results[best_carbone_idx]['contacts_utiles']:,.0f}")
                             st.metric("Carbone", f"{pareto_results[best_carbone_idx]['carbone_kg']:,.1f} kg")
                         
+                        with col3:
+                            st.markdown("**Compromis Optimal**")
+                            st.metric("Poids Carbone", f"{pareto_results[optimal_idx]['w_carbone']:.1f}")
+                            st.metric("Contacts Utiles", f"{pareto_results[optimal_idx]['contacts_utiles']:,.0f}")
+                            st.metric("Carbone", f"{pareto_results[optimal_idx]['carbone_kg']:,.1f} kg")
+                        
                         # Option d'export
                         st.markdown("---")
                         if st.button("Exporter les résultats Pareto (CSV)"):
-                            csv = df_pareto_final.to_csv(index=False)
+                            print(st.session_state.df_pareto_final)
+                            csv = st.session_state.df_pareto_final.to_csv(index=False)
                             st.download_button(
                                 label="Télécharger CSV",
                                 data=csv,
@@ -706,7 +733,7 @@ if co2_ref is not None:
         """)
         
         # Afficher la table de référence CO2
-        st.dataframe(co2_ref, use_container_width=True)
+        st.dataframe(co2_ref, width=1200)
 
 else:
     st.error("⚠️ Impossible de charger le fichier de référence CO2g contact.xlsx")
